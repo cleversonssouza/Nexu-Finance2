@@ -1,72 +1,18 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
+import { createClient } from "@supabase/supabase-js";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("nexu_finance.db");
-
-// Initialize Database Schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS income (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    amount REAL NOT NULL,
-    date TEXT NOT NULL,
-    is_recurring INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    amount_planned REAL NOT NULL,
-    amount_actual REAL,
-    due_date TEXT NOT NULL,
-    status TEXT DEFAULT 'pending', -- 'paid', 'pending'
-    is_recurring INTEGER DEFAULT 0,
-    notes TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS credit_cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    credit_limit REAL NOT NULL,
-    closing_day INTEGER NOT NULL,
-    due_day INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS card_transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    card_id INTEGER NOT NULL,
-    description TEXT NOT NULL,
-    amount REAL NOT NULL,
-    date TEXT NOT NULL,
-    installments_total INTEGER DEFAULT 1,
-    installment_current INTEGER DEFAULT 1,
-    buyer_type TEXT DEFAULT 'user', -- 'user', 'third_party'
-    third_party_name TEXT,
-    FOREIGN KEY (card_id) REFERENCES credit_cards(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS third_party_debts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    person_name TEXT NOT NULL,
-    amount REAL NOT NULL,
-    date TEXT NOT NULL,
-    origin TEXT,
-    status TEXT DEFAULT 'pending' -- 'received', 'pending'
-  );
-
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
-`);
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function startServer() {
   const app = express();
@@ -74,185 +20,254 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", database: "supabase" });
+  });
+
   // API Routes
   
   // Income
-  app.get("/api/income", (req, res) => {
+  app.get("/api/income", async (req, res) => {
     const { month, year } = req.query;
-    let query = "SELECT * FROM income";
-    const params = [];
+    let query = supabase.from('income').select('*');
+    
     if (month && year) {
-      query += " WHERE strftime('%m', date) = ? AND strftime('%Y', date) = ?";
-      params.push(month.toString().padStart(2, '0'), year.toString());
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+      const endDate = `${year}-${month.toString().padStart(2, '0')}-31`;
+      query = query.gte('date', startDate).lte('date', endDate);
     }
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   });
 
-  app.post("/api/income", (req, res) => {
+  app.post("/api/income", async (req, res) => {
     const { description, category, amount, date, is_recurring } = req.body;
-    const info = db.prepare(
-      "INSERT INTO income (description, category, amount, date, is_recurring) VALUES (?, ?, ?, ?, ?)"
-    ).run(description, category, amount, date, is_recurring ? 1 : 0);
-    res.json({ id: info.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('income')
+      .insert([{ description, category, amount, date, is_recurring: is_recurring ? 1 : 0 }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.delete("/api/income/:id", (req, res) => {
-    db.prepare("DELETE FROM income WHERE id = ?").run(req.params.id);
+  app.delete("/api/income/:id", async (req, res) => {
+    const { error } = await supabase.from('income').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
-  app.patch("/api/income/:id", (req, res) => {
+  app.patch("/api/income/:id", async (req, res) => {
     const { amount, description, category, date } = req.body;
-    db.prepare("UPDATE income SET amount = ?, description = ?, category = ?, date = ? WHERE id = ?")
-      .run(amount, description, category, date, req.params.id);
+    const { error } = await supabase
+      .from('income')
+      .update({ amount, description, category, date })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
   // Expenses
-  app.get("/api/expenses", (req, res) => {
+  app.get("/api/expenses", async (req, res) => {
     const { month, year } = req.query;
-    let query = "SELECT * FROM expenses";
-    const params = [];
+    let query = supabase.from('expenses').select('*');
+    
     if (month && year) {
-      query += " WHERE strftime('%m', due_date) = ? AND strftime('%Y', due_date) = ?";
-      params.push(month.toString().padStart(2, '0'), year.toString());
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+      const endDate = `${year}-${month.toString().padStart(2, '0')}-31`;
+      query = query.gte('due_date', startDate).lte('due_date', endDate);
     }
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   });
 
-  app.post("/api/expenses", (req, res) => {
+  app.post("/api/expenses", async (req, res) => {
     const { description, category, amount_planned, due_date, is_recurring, notes } = req.body;
-    const info = db.prepare(
-      "INSERT INTO expenses (description, category, amount_planned, due_date, is_recurring, notes) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(description, category, amount_planned, due_date, is_recurring ? 1 : 0, notes);
-    res.json({ id: info.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('expenses')
+      .insert([{ description, category, amount_planned, due_date, is_recurring: is_recurring ? 1 : 0, notes }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.patch("/api/expenses/:id", (req, res) => {
+  app.patch("/api/expenses/:id", async (req, res) => {
     const { status, amount_actual, amount_planned, description, category, due_date } = req.body;
+    let updateData: any = {};
     if (status !== undefined || amount_actual !== undefined) {
-      db.prepare("UPDATE expenses SET status = ?, amount_actual = ? WHERE id = ?")
-        .run(status, amount_actual, req.params.id);
+      updateData = { status, amount_actual };
     } else {
-      db.prepare("UPDATE expenses SET amount_planned = ?, description = ?, category = ?, due_date = ? WHERE id = ?")
-        .run(amount_planned, description, category, due_date, req.params.id);
+      updateData = { amount_planned, description, category, due_date };
     }
+    
+    const { error } = await supabase.from('expenses').update(updateData).eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
-  app.delete("/api/expenses/:id", (req, res) => {
-    db.prepare("DELETE FROM expenses WHERE id = ?").run(req.params.id);
+  app.delete("/api/expenses/:id", async (req, res) => {
+    const { error } = await supabase.from('expenses').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
   // Credit Cards
-  app.get("/api/cards", (req, res) => {
-    const cards = db.prepare("SELECT * FROM credit_cards").all();
-    res.json(cards);
+  app.get("/api/cards", async (req, res) => {
+    const { data, error } = await supabase.from('credit_cards').select('*');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   });
 
-  app.post("/api/cards", (req, res) => {
+  app.post("/api/cards", async (req, res) => {
     const { name, credit_limit, closing_day, due_day } = req.body;
-    const info = db.prepare(
-      "INSERT INTO credit_cards (name, credit_limit, closing_day, due_day) VALUES (?, ?, ?, ?)"
-    ).run(name, credit_limit, closing_day, due_day);
-    res.json({ id: info.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('credit_cards')
+      .insert([{ name, credit_limit, closing_day, due_day }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.get("/api/cards/:id/transactions", (req, res) => {
+  app.get("/api/cards/:id/transactions", async (req, res) => {
     const { month, year, buyer_type } = req.query;
-    let query = "SELECT * FROM card_transactions WHERE card_id = ?";
-    const params: any[] = [req.params.id];
+    let query = supabase.from('card_transactions').select('*').eq('card_id', req.params.id);
     
     if (buyer_type && buyer_type !== 'all') {
-      query += " AND buyer_type = ?";
-      params.push(buyer_type);
+      query = query.eq('buyer_type', buyer_type);
     }
     
     if (month && year) {
-      // Simple month/year filtering for now
-      query += " AND strftime('%m', date) = ? AND strftime('%Y', date) = ?";
-      params.push(month.toString().padStart(2, '0'), year.toString());
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+      const endDate = `${year}-${month.toString().padStart(2, '0')}-31`;
+      query = query.gte('date', startDate).lte('date', endDate);
     }
     
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   });
 
-  app.post("/api/cards/:id/transactions", (req, res) => {
+  app.post("/api/cards/:id/transactions", async (req, res) => {
     const { description, amount, date, installments_total, buyer_type, third_party_name } = req.body;
-    const info = db.prepare(
-      "INSERT INTO card_transactions (card_id, description, amount, date, installments_total, buyer_type, third_party_name) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(req.params.id, description, amount, date, installments_total || 1, buyer_type || 'user', third_party_name);
-    res.json({ id: info.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('card_transactions')
+      .insert([{ 
+        card_id: req.params.id, 
+        description, 
+        amount, 
+        date, 
+        installments_total: installments_total || 1, 
+        buyer_type: buyer_type || 'user', 
+        third_party_name 
+      }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.delete("/api/card_transactions/:id", (req, res) => {
-    db.prepare("DELETE FROM card_transactions WHERE id = ?").run(req.params.id);
+  app.delete("/api/card_transactions/:id", async (req, res) => {
+    const { error } = await supabase.from('card_transactions').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
   // Third Party Debts
-  app.get("/api/debts", (req, res) => {
-    const rows = db.prepare("SELECT * FROM third_party_debts").all();
-    res.json(rows);
+  app.get("/api/debts", async (req, res) => {
+    const { data, error } = await supabase.from('third_party_debts').select('*');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   });
 
-  app.post("/api/debts", (req, res) => {
+  app.post("/api/debts", async (req, res) => {
     const { person_name, amount, date, origin } = req.body;
-    const info = db.prepare(
-      "INSERT INTO third_party_debts (person_name, amount, date, origin) VALUES (?, ?, ?, ?)"
-    ).run(person_name, amount, date, origin);
-    res.json({ id: info.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('third_party_debts')
+      .insert([{ person_name, amount, date, origin }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.patch("/api/debts/:id", (req, res) => {
+  app.patch("/api/debts/:id", async (req, res) => {
     const { status, amount, person_name, origin, date } = req.body;
+    let updateData: any = {};
     if (status !== undefined) {
-      db.prepare("UPDATE third_party_debts SET status = ? WHERE id = ?").run(status, req.params.id);
+      updateData = { status };
     } else {
-      db.prepare("UPDATE third_party_debts SET amount = ?, person_name = ?, origin = ?, date = ? WHERE id = ?")
-        .run(amount, person_name, origin, date, req.params.id);
+      updateData = { amount, person_name, origin, date };
     }
+    
+    const { error } = await supabase.from('third_party_debts').update(updateData).eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.sendStatus(204);
   });
 
   // Dashboard Summary
-  app.get("/api/summary", (req, res) => {
+  app.get("/api/summary", async (req, res) => {
     const { month, year } = req.query;
+    if (!month || !year) return res.status(400).json({ error: "Month and year required" });
+    
     const m = month.toString().padStart(2, '0');
     const y = year.toString();
+    const startDate = `${y}-${m}-01`;
+    const endDate = `${y}-${m}-31`;
 
-    const totalIncome = db.prepare("SELECT SUM(amount) as total FROM income WHERE strftime('%m', date) = ? AND strftime('%Y', date) = ?").get(m, y).total || 0;
-    const totalExpensesTable = db.prepare("SELECT SUM(amount_planned) as total FROM expenses WHERE strftime('%m', due_date) = ? AND strftime('%Y', due_date) = ?").get(m, y).total || 0;
-    const paidExpenses = db.prepare("SELECT SUM(amount_actual) as total FROM expenses WHERE strftime('%m', due_date) = ? AND strftime('%Y', due_date) = ? AND status = 'paid'").get(m, y).total || 0;
-    
-    // Personal card transactions for the month
-    const personalCardExpenses = db.prepare(`
-      SELECT SUM(amount / installments_total) as total 
-      FROM card_transactions 
-      WHERE strftime('%m', date) = ? AND strftime('%Y', date) = ?
-      AND buyer_type = 'user'
-    `).get(m, y).total || 0;
+    try {
+      // Income
+      const { data: incomeData, error: incomeErr } = await supabase
+        .from('income')
+        .select('amount')
+        .gte('date', startDate)
+        .lte('date', endDate);
+      
+      const totalIncome = (incomeData || []).reduce((sum, item) => sum + (item.amount || 0), 0);
 
-    // Total card bill (all transactions)
-    const cardTotal = db.prepare(`
-      SELECT SUM(amount / installments_total) as total 
-      FROM card_transactions 
-      WHERE strftime('%m', date) = ? AND strftime('%Y', date) = ?
-    `).get(m, y).total || 0;
+      // Expenses
+      const { data: expenseData, error: expenseErr } = await supabase
+        .from('expenses')
+        .select('amount_planned, amount_actual, status')
+        .gte('due_date', startDate)
+        .lte('due_date', endDate);
+      
+      const totalExpensesTable = (expenseData || []).reduce((sum, item) => sum + (item.amount_planned || 0), 0);
+      const paidExpenses = (expenseData || []).filter(i => i.status === 'paid').reduce((sum, item) => sum + (item.amount_actual || 0), 0);
 
-    const totalExpenses = totalExpensesTable + personalCardExpenses;
+      // Card Transactions
+      const { data: cardData, error: cardErr } = await supabase
+        .from('card_transactions')
+        .select('amount, installments_total, buyer_type')
+        .gte('date', startDate)
+        .lte('date', endDate);
+      
+      const personalCardExpenses = (cardData || [])
+        .filter(i => i.buyer_type === 'user')
+        .reduce((sum, item) => sum + ((item.amount || 0) / (item.installments_total || 1)), 0);
 
-    res.json({
-      totalIncome,
-      totalExpenses,
-      paidExpenses,
-      cardTotal,
-      balance: totalIncome - totalExpenses
-    });
+      const cardTotal = (cardData || [])
+        .reduce((sum, item) => sum + ((item.amount || 0) / (item.installments_total || 1)), 0);
+
+      const totalExpenses = totalExpensesTable + personalCardExpenses;
+
+      res.json({
+        totalIncome,
+        totalExpenses,
+        paidExpenses,
+        cardTotal,
+        balance: totalIncome - totalExpenses
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   // Vite middleware for development
