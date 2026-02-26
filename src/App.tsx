@@ -92,7 +92,7 @@ export default function App() {
 
   useEffect(() => {
     fetchSummary();
-  }, [currentDate]);
+  }, [currentDate, activeTab]);
 
   const fetchSummary = async () => {
     try {
@@ -100,11 +100,19 @@ export default function App() {
       const year = format(currentDate, 'yyyy');
       const res = await fetch(`/api/summary?month=${month}&year=${year}`);
       const data = await res.json();
-      setSummary(data);
       
-      // Get AI insights
-      const aiInsights = await getFinancialInsights(data);
-      setInsights(aiInsights);
+      // Update summary state
+      setSummary(prev => {
+        // Only update if data actually changed to avoid unnecessary re-renders
+        if (JSON.stringify(prev) === JSON.stringify(data)) return prev;
+        return data;
+      });
+      
+      // Get AI insights only if on dashboard
+      if (activeTab === 'dashboard') {
+        const aiInsights = await getFinancialInsights(data);
+        setInsights(aiInsights);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -130,10 +138,12 @@ export default function App() {
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   useEffect(() => {
-    fetchSummary();
     fetchItems();
+  }, [currentDate, activeTab]);
+
+  useEffect(() => {
     if (selectedCard) fetchCardTransactions(selectedCard.id);
-  }, [currentDate, activeTab, selectedCard, cardFilter]);
+  }, [currentDate, selectedCard, cardFilter]);
 
   const fetchCardTransactions = async (cardId: number) => {
     try {
